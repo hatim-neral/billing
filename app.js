@@ -46,7 +46,7 @@ const billTotal = b => Math.max(0, billSubtotal(b) - (b.discount || 0));
 const billPaid = b => sum(b.payments, p => p.amount);
 const billDue = b => Math.max(0, round2(billTotal(b) - billPaid(b)));
 const isPending = b => billDue(b) > 0;
-const byNewest = (a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt;
+const byNewest = (a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt || b.no - a.no;
 
 function toast(msg) {
   const t = $('#toast');
@@ -54,6 +54,50 @@ function toast(msg) {
   t.classList.add('show');
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+// Load a CDN script once, only when a feature needs it.
+const scriptLoads = {};
+function loadScript(src) {
+  return scriptLoads[src] ??= new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => { delete scriptLoads[src]; reject(new Error('Could not load ' + src)); };
+    document.head.appendChild(s);
+  });
+}
+const QR_LIB = 'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js';
+const SHOT_LIB = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+
+const AVATAR_HUES = [152, 210, 265, 335, 25, 185];
+function avatar(name = '') {
+  const initials = name.trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return `<span class="avatar" style="--h:${AVATAR_HUES[h % AVATAR_HUES.length]}" aria-hidden="true">${esc(initials)}</span>`;
+}
+
+function dayLabel(iso) {
+  const y = new Date();
+  y.setDate(y.getDate() - 1);
+  if (iso === today()) return 'Today';
+  if (iso === localISO(y)) return 'Yesterday';
+  const d = new Date(iso + 'T00:00');
+  const opts = { weekday: 'short', day: 'numeric', month: 'short' };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
+  return d.toLocaleDateString('en-IN', opts);
+}
+
+function animateNumber(el, target) {
+  if (!el || !target || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const t0 = performance.now();
+  const step = now => {
+    const p = Math.min(1, (now - t0) / 700);
+    el.textContent = money(Math.round(target * (1 - (1 - p) ** 3)));
+    if (p < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
 }
 
 function periodStart(p) {
@@ -71,10 +115,10 @@ function billRow(b, showCustomer = true) {
   const due = billDue(b);
   const items = b.items.map(i => i.name || i.category).join(', ');
   return `<a class="row" href="#/bill/${b.id}">
-    <div>
+    <div class="who">${showCustomer ? avatar(c?.name) : ''}<div>
       <strong>${showCustomer ? esc(c?.name || 'Unknown') : esc(items)}</strong>
       <small>#${b.no} · ${fmtDate(b.date)}${showCustomer ? ' · ' + esc(items) : ''}</small>
-    </div>
+    </div></div>
     <div class="amt">${money(billTotal(b))}<br>
       ${due > 0 ? `<span class="badge pending">Due ${money(due)}</span>` : '<span class="badge paid">Paid</span>'}
     </div>
@@ -178,7 +222,35 @@ const CAMERA_ICON = '<svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 
 // ---------- views ----------
 let homePeriod = 'month';
 
-function homeView() {
+function monthlySales(months = 6) {
+  const now = new Date();
+  const out = [];
+  for (let i = months - 1; i >= 0; i--) {
+    const m = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    out.push({ key: localISO(m).slice(0, 7), label: m.toLocaleDateString('en-IN', { month: 'short' }), year: m.getFullYear(), total: 0 });
+  }
+  const idx = Object.fromEntries(out.map((m, i) => [m.key, i]));
+  db.bills.forEach(b => {
+    const i = idx[b.date.slice(0, 7)];
+    if (i !== undefined) out[i].total += billTotal(b);
+  });
+  return out;
+}
+
+// Bar per month; tap/hover shows the amount, the current month is always labelled.
+function salesChart(data) {
+  const max = Math.max(...data.map(m => m.total), 1);
+  return `<div class="chart">${data.map((m, i) => {
+    const current = i === data.length - 1;
+    const h = m.total ? Math.max((m.total / max) * 100, 2) : 0;
+    return `<button type="button" class="col${current ? ' current' : ''}" aria-label="${m.label} ${m.year}: ${money(m.total)}${current ? ' so far' : ''}">
+      <span class="plot"><span class="bar-v" style="height:${h}%"><span class="tip">${money(m.total)}</span></span></span>
+      <span class="col-label">${m.label}</span>
+    </button>`;
+  }).join('')}</div>`;
+}
+
+function homeView(animate = false) {
   const periods = [['week', '7 Days'], ['month', 'This Month'], ['3', '3 Months'], ['6', '6 Months'], ['12', '12 Months'], ['all', 'Lifetime']];
   const start = periodStart(homePeriod);
   const inRange = d => !start || d >= start;
@@ -188,6 +260,18 @@ function homeView() {
   let collected = 0;
   db.bills.forEach(b => b.payments.forEach(p => { if (inRange(p.date)) collected += p.amount; }));
   const pending = db.bills.filter(isPending);
+  const totalDue = sum(pending, billDue);
+
+  const t = today();
+  const todayBills = db.bills.filter(b => b.date === t);
+  let todayCollected = 0;
+  db.bills.forEach(b => b.payments.forEach(p => { if (p.date === t) todayCollected += p.amount; }));
+  const hour = new Date().getHours();
+  const greet = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+
+  const dueBy = {};
+  pending.forEach(b => { dueBy[b.customerId] = (dueBy[b.customerId] || 0) + billDue(b); });
+  const debtors = Object.entries(dueBy).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([id, due]) => ({ c: cust(id) || {}, due }));
 
   const byCat = {};
   bills.forEach(b => b.items.forEach(i => { byCat[i.category] = (byCat[i.category] || 0) + i.qty * i.price; }));
@@ -196,7 +280,21 @@ function homeView() {
   const recent = [...db.bills].sort(byNewest).slice(0, 5);
 
   app.innerHTML = `
-    <h1>Revenue</h1>
+    <section class="hero">
+      <small>${greet} · ${fmtDate(t)}</small>
+      <div class="hero-label">Today's sales</div>
+      <div class="hero-num">${money(sum(todayBills, billTotal))}</div>
+      <div class="hero-sub">${todayBills.length} bill${todayBills.length === 1 ? '' : 's'} · ${money(todayCollected)} collected</div>
+      <a class="btn hero-btn" href="#/new">+ New bill</a>
+    </section>
+
+    ${installPrompt ? `<div class="card install-card">
+      <img src="icons/icon-192.png" alt="">
+      <div><b>Install BillBook</b><small>Open it from your home screen, like any app</small></div>
+      <button class="btn primary small" data-act="install">Install</button>
+    </div>` : ''}
+
+    <h2>Revenue</h2>
     <div class="chips">${periods.map(([k, l]) =>
       `<button class="chip ${k === homePeriod ? 'active' : ''}" data-act="period" data-p="${k}">${l}</button>`).join('')}</div>
     <div class="stats">
@@ -205,11 +303,24 @@ function homeView() {
       <div class="stat"><small>Bills</small><b>${bills.length}</b></div>
     </div>
 
+    ${db.bills.length ? `<div class="card">
+      <h2>Monthly sales</h2>
+      ${salesChart(monthlySales())}
+    </div>` : ''}
+
     <h2>Overall</h2>
     <div class="stats">
-      <a class="stat pending" href="#/bills?tab=pending"><small>Pending · ${pending.length} bill${pending.length === 1 ? "" : "s"}</small><b>${money(sum(pending, billDue))}</b></a>
+      <a class="stat pending" href="#/bills?tab=pending"><small>Pending · ${pending.length} bill${pending.length === 1 ? '' : 's'}</small><b>${money(totalDue)}</b></a>
       <a class="stat paid" href="#/bills?tab=paid"><small>Paid bills</small><b>${db.bills.length - pending.length}</b></a>
     </div>
+
+    ${debtors.length ? `<div class="card">
+      <div class="card-head"><h2>To collect</h2><a href="#/bills?tab=pending">See all</a></div>
+      <div class="list flush">${debtors.map(({ c, due }) => `<a class="row" href="#/customer/${c.id}">
+        <div class="who">${avatar(c.name)}<div><strong>${esc(c.name)}</strong><small>${esc(c.phone || 'No phone')}</small></div></div>
+        <div class="amt"><span class="badge pending">${money(due)}</span></div>
+      </a>`).join('')}</div>
+    </div>` : ''}
 
     ${cats.length ? `<div class="card"><h2>Sales by category</h2>
       ${cats.map(([c, v]) => `<div class="bar">
@@ -220,6 +331,79 @@ function homeView() {
     <h2>Recent bills</h2>
     ${recent.length ? billList(recent) : `<div class="list"><div class="empty">No bills yet.<br><br><a class="btn primary" href="#/new">Make your first bill</a></div></div>`}
   `;
+  if (animate) animateNumber($('.hero-num'), sum(todayBills, billTotal));
+}
+
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  installPrompt = e;
+  if (!needsWelcome() && ['', '#', '#/'].includes(location.hash)) homeView();
+});
+
+const needsWelcome = () => !db.settings.onboarded && !db.bills.length;
+
+function welcomeView() {
+  document.body.classList.add('welcome-mode');
+  app.innerHTML = `
+    <div class="welcome">
+      <img src="icon.svg" class="welcome-logo" alt="">
+      <h1>BillBook</h1>
+      <p class="lead">Billing, customer history and revenue for your shop, right on your phone.</p>
+      <ul class="features">
+        <li><b>Bill in seconds</b><span>Type the item and price. Categories and dates fill in by themselves.</span></li>
+        <li><b>Know who owes you</b><span>Every pending bill and customer balance in one place, with WhatsApp reminders.</span></li>
+        <li><b>See your revenue</b><span>This week, this month, the last 12 months, by category.</span></li>
+      </ul>
+      <button class="btn primary block" data-act="demo">Try with demo data</button>
+      <form id="setupForm" class="setup">
+        <input name="shop" placeholder="Your shop name" required>
+        <button class="btn block">Set up my shop</button>
+      </form>
+      <p class="fine">Works offline · Your data stays on this phone</p>
+    </div>`;
+
+  $('#setupForm').onsubmit = e => {
+    e.preventDefault();
+    db.settings.shopName = e.target.shop.value.trim() || 'My Shop';
+    db.settings.onboarded = true;
+    save();
+    renderShopName();
+    location.hash = '#/';
+    route();
+  };
+  app.onclick = e => {
+    if (!e.target.closest('[data-act=demo]')) return;
+    loadSampleData();
+    if (db.settings.shopName === 'My Shop') db.settings.shopName = 'Demo Fashion Store';
+    db.settings.onboarded = true;
+    save();
+    renderShopName();
+    location.hash = '#/';
+    route();
+  };
+}
+
+function loadSampleData() {
+  const { customers, bills } = makeSampleData(db.settings.nextBillNo);
+  db.customers.push(...customers);
+  db.bills.push(...bills);
+  db.settings.nextBillNo += bills.length;
+  save();
+  renderShopName();
+  return { customers, bills };
+}
+
+function groupedBillList(bills) {
+  if (!bills.length) return billList(bills);
+  const groups = [];
+  bills.forEach(b => {
+    const g = groups[groups.length - 1];
+    if (g && g.date === b.date) g.bills.push(b);
+    else groups.push({ date: b.date, bills: [b] });
+  });
+  return groups.map(g => `<div class="day-head"><span>${dayLabel(g.date)}</span><span>${money(sum(g.bills, billTotal))}</span></div>
+    ${billList(g.bills)}`).join('');
 }
 
 function billsView(tab) {
@@ -238,7 +422,7 @@ function billsView(tab) {
     $('#summary').innerHTML = `<span>${list.length} bill${list.length === 1 ? "" : "s"}</span>` + (tab === 'pending'
       ? `<span>Total due <b>${money(sum(list, billDue))}</b></span>`
       : `<span>Total <b>${money(sum(list, billTotal))}</b></span>`);
-    $('#list').innerHTML = billList(list);
+    $('#list').innerHTML = groupedBillList(list);
   };
   q.oninput = draw;
   draw();
@@ -277,7 +461,7 @@ function itemRow(item = {}) {
       <input type="file" accept="image/*" capture="environment" data-src="camera" hidden>
       <input type="file" accept="image/*" data-src="gallery" hidden>
     </td>
-    <td><input name="iname" placeholder="Item name" enterkeyhint="next" value="${esc(item.name || item.category)}"><small class="cat"></small></td>
+    <td><input name="iname" list="itemNames" placeholder="Item name" enterkeyhint="next" value="${esc(item.name || item.category)}"><small class="cat"></small></td>
     <td><input name="price" type="number" min="0" step="any" inputmode="decimal" enterkeyhint="next" placeholder="0" value="${item.price ?? ''}"></td>
     <td><button type="button" class="icon-btn" data-act="del-item" aria-label="Remove item">✕</button></td>
   </tr>`;
@@ -287,6 +471,18 @@ function billFormView(editId, presetCustomerId) {
   const bill = editId ? findBill(editId) : null;
   if (editId && !bill) return notFound();
   const c = bill ? cust(bill.customerId) : cust(presetCustomerId);
+
+  // items sold before -> latest price, for suggestions while typing
+  const known = new Map();
+  [...db.bills].sort(byNewest).forEach(b => b.items.forEach(i => {
+    const k = (i.name || '').toLowerCase();
+    if (k && !known.has(k)) known.set(k, { name: i.name, price: i.price });
+  }));
+  const fillKnownPrice = r => {
+    const k = known.get($('[name=iname]', r).value.trim().toLowerCase());
+    const price = $('[name=price]', r);
+    if (k && !price.value) price.value = k.price;
+  };
 
   app.innerHTML = `
     <h1>${bill ? 'Edit Bill #' + bill.no : 'New Bill'}</h1>
@@ -321,6 +517,7 @@ function billFormView(editId, presetCustomerId) {
       </div>
 
       <button class="btn primary block">${bill ? 'Save Changes' : 'Save Bill'}</button>
+      <datalist id="itemNames">${[...known.values()].slice(0, 300).map(k => `<option value="${esc(k.name)}">`).join('')}</datalist>
     </form>`;
 
   const form = $('#billForm');
@@ -398,7 +595,12 @@ function billFormView(editId, presetCustomerId) {
     if (e.key !== 'Enter') return;
     e.preventDefault();
     const r = e.target.closest('.item');
-    if (e.target.name === 'iname') $('[name=price]', r).focus();
+    if (e.target.name === 'iname') {
+      fillKnownPrice(r);
+      updateTotals();
+      $('[name=price]', r).focus();
+      $('[name=price]', r).select();
+    }
     else {
       refreshRows();
       $('[name=iname]', r.nextElementSibling)?.focus();
@@ -423,6 +625,8 @@ function billFormView(editId, presetCustomerId) {
   form.oninput = e => {
     if (e.target.name === 'cname' || e.target.name === 'cphone') return;
     if (e.target.name === 'paid' && fullPaid) setFullPaid(false);
+    // picking a suggestion from the list fills in the last price
+    if (e.target.name === 'iname' && (!e.inputType || e.inputType === 'insertReplacementText')) fillKnownPrice(e.target.closest('.item'));
     if (items.contains(e.target)) refreshRows();
     updateTotals();
   };
@@ -551,8 +755,14 @@ function billView(id) {
         ${due > 0 ? `<div class="t-row due"><span>Pending</span><span>${money(due)}</span></div>` : ''}
       </div>
       ${b.note ? `<p class="muted">Note: ${esc(b.note)}</p>` : ''}
+      ${due > 0 && s.upiId ? `<div class="upi">
+        <div class="qr" id="qr"></div>
+        <div><b>Scan to pay ${money(due)}</b><small>Any UPI app · ${esc(s.upiId)}</small></div>
+      </div>` : ''}
       <p style="text-align:center;margin:14px 0 0">${due > 0 ? '<span class="badge pending">PENDING</span>' : '<span class="badge paid">PAID</span>'}</p>
     </div>
+
+    ${due > 0 && !s.upiId ? `<a class="upi-hint no-print" href="#/more">＋ Add your UPI ID in More to show a scan-to-pay QR on bills</a>` : ''}
 
     ${due > 0 ? `
     <form class="card no-print" id="payForm">
@@ -570,12 +780,23 @@ function billView(id) {
       <button class="icon-btn" data-act="del-payment" data-id="${p.id}" aria-label="Delete payment">✕</button>
     </div>`).join('')}</div>` : ''}
 
+    <button class="btn primary block no-print share-btn" data-act="share">Share bill</button>
     <div class="actions no-print">
-      <button class="btn" data-act="print">Print</button>
       <button class="btn" data-act="whatsapp">WhatsApp</button>
+      <button class="btn" data-act="print">Print</button>
       <a class="btn" href="#/edit/${b.id}">Edit</a>
     </div>
     <button class="btn danger block no-print" data-act="del-bill">Delete Bill</button>`;
+
+  if ($('#qr')) {
+    loadScript(QR_LIB).then(() => {
+      const qr = qrcode(0, 'M');
+      qr.addData(upiLink(b, due));
+      qr.make();
+      $('#qr').innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+    }).catch(() => $('.upi')?.remove());
+  }
+  if (navigator.canShare) loadScript(SHOT_LIB).catch(() => {}); // warm up so sharing is instant
 
   const payForm = $('#payForm');
   if (payForm) payForm.onsubmit = e => {
@@ -593,6 +814,7 @@ function billView(id) {
     if (!btn) return;
     const act = btn.dataset.act;
     if (act === 'view-img' && btn.src) showImage(btn.src);
+    else if (act === 'share') shareBillImage(b);
     else if (act === 'print') window.print();
     else if (act === 'whatsapp') shareWhatsApp(b);
     else if (act === 'del-payment' && confirm('Delete this payment?')) {
@@ -627,9 +849,34 @@ function shareWhatsApp(b) {
     '',
     'Thank you for shopping with us!',
   ].filter((l, i, a) => l !== '' || a[i - 1] !== '');
-  let phone = normPhone(c.phone);
+  openWhatsApp(c.phone, lines.join('\n'));
+}
+
+function upiLink(b, amount) {
+  const p = new URLSearchParams({ pa: db.settings.upiId, pn: db.settings.shopName, am: amount.toFixed(2), cu: 'INR', tn: `Bill ${b.no}` });
+  return 'upi://pay?' + p.toString().replace(/\+/g, '%20').replace(/%40/g, '@');
+}
+
+// Share the receipt as a picture (photos and QR included) through Android's share sheet.
+// Falls back to the text WhatsApp message where image sharing isn't supported.
+async function shareBillImage(b) {
+  try {
+    if (!navigator.canShare) throw new Error('no share');
+    await loadScript(SHOT_LIB);
+    const canvas = await html2canvas($('.receipt'), { scale: 2, backgroundColor: null, logging: false });
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+    const file = new File([blob], `bill-${b.no}.png`, { type: 'image/png' });
+    if (!navigator.canShare({ files: [file] })) throw new Error('no file share');
+    await navigator.share({ files: [file], title: `Bill #${b.no}`, text: `Bill #${b.no} from ${db.settings.shopName}` });
+  } catch (err) {
+    if (err.name !== 'AbortError') shareWhatsApp(b);
+  }
+}
+
+function openWhatsApp(rawPhone, text) {
+  let phone = normPhone(rawPhone);
   if (phone.length === 10) phone = '91' + phone;
-  window.open(`https://wa.me/${phone}?text=${encodeURIComponent(lines.join('\n'))}`, '_blank');
+  window.open(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`, '_blank');
 }
 
 function customerStats(c) {
@@ -659,7 +906,7 @@ function customersView() {
     $('#summary').innerHTML = `<span>${list.length} customers</span><span>Pending <b>${money(sum(list, x => x.s.due))}</b></span>`;
     $('#list').innerHTML = list.length ? `<div class="list">${list.map(({ c, s }) => `
       <a class="row" href="#/customer/${c.id}">
-        <div><strong>${esc(c.name)}</strong><small>${esc(c.phone || 'No phone')} · ${s.bills.length} bills</small></div>
+        <div class="who">${avatar(c.name)}<div><strong>${esc(c.name)}</strong><small>${esc(c.phone || 'No phone')} · ${s.bills.length} bill${s.bills.length === 1 ? '' : 's'}</small></div></div>
         <div class="amt">${money(s.total)}<br>
           ${s.due > 0 ? `<span class="badge pending">Due ${money(s.due)}</span>` : '<span class="badge paid">Clear</span>'}
         </div>
@@ -678,9 +925,10 @@ function customerView(id, tab) {
   const digits = normPhone(c.phone);
 
   app.innerHTML = `
-    <h1>${esc(c.name)}</h1>
+    <div class="profile">${avatar(c.name)}<div><h1>${esc(c.name)}</h1><small>${esc(c.phone || 'No phone')}</small></div></div>
     <div class="actions">
       ${digits ? `<a class="btn" href="tel:${esc(c.phone)}">Call</a>` : ''}
+      ${digits && s.due > 0 ? '<button class="btn" data-act="remind">Remind</button>' : ''}
       <a class="btn primary" href="#/new?c=${c.id}">+ New Bill</a>
       <button class="btn" data-act="edit-customer">Edit</button>
     </div>
@@ -710,6 +958,19 @@ function customerView(id, tab) {
   app.onclick = e => {
     const act = e.target.closest('[data-act]')?.dataset.act;
     if (act === 'edit-customer') f.hidden = !f.hidden;
+    else if (act === 'remind') {
+      const lines = s.bills.filter(isPending).sort(byNewest).map(b => `• Bill #${b.no} (${fmtDate(b.date)}): ${money(billDue(b))}`);
+      openWhatsApp(c.phone, [
+        `Hello ${c.name},`,
+        `This is a gentle reminder from *${db.settings.shopName}*.`,
+        '',
+        ...lines,
+        '',
+        `*Total pending: ${money(s.due)}*`,
+        '',
+        'Thank you!',
+      ].join('\n'));
+    }
     else if (act === 'del-customer' && confirm('Delete this customer?')) {
       db.customers = db.customers.filter(x => x.id !== id);
       save();
@@ -727,6 +988,7 @@ function moreView() {
       <div class="field"><label>Shop name</label><input name="shopName" value="${esc(s.shopName)}"></div>
       <div class="field"><label>Phone</label><input name="phone" type="tel" value="${esc(s.phone)}"></div>
       <div class="field"><label>Address</label><input name="address" value="${esc(s.address)}"></div>
+      <div class="field"><label>UPI ID (shows a scan-to-pay QR on pending bills)</label><input name="upi" placeholder="e.g. yourshop@okhdfcbank" autocapitalize="off" value="${esc(s.upiId)}"></div>
       <button class="btn primary">Save</button>
     </form>
 
@@ -767,6 +1029,7 @@ function moreView() {
     s.shopName = f.shopName.value.trim() || 'My Shop';
     s.phone = f.phone.value.trim();
     s.address = f.address.value.trim();
+    s.upiId = f.upi.value.trim();
     save();
     renderShopName();
     toast('Saved');
@@ -810,17 +1073,14 @@ function moreView() {
       save();
       moreView();
     } else if (act === 'load-sample') {
-      const { customers, bills } = makeSampleData(db.settings.nextBillNo);
-      db.customers.push(...customers);
-      db.bills.push(...bills);
-      db.settings.nextBillNo += bills.length;
-      save();
+      const { customers, bills } = loadSampleData();
       toast(`Added ${customers.length} customers and ${bills.length} bills`);
       moreView();
     } else if (act === 'remove-sample' && confirm('Remove all sample customers and their bills?')) {
       db.customers = db.customers.filter(c => !c.sample);
       db.bills = db.bills.filter(b => !b.sample);
       save();
+      renderShopName();
       toast('Sample data removed');
       moreView();
     } else if (act === 'export') {
@@ -848,7 +1108,10 @@ function notFound() {
   app.innerHTML = '<div class="empty">Not found. <a href="#/">Go home</a></div>';
 }
 
-function renderShopName() { $('#shopName').textContent = db.settings.shopName; }
+function renderShopName() {
+  $('#shopName').textContent = db.settings.shopName;
+  $('#demoChip').hidden = !db.customers.some(c => c.sample);
+}
 
 // ---------- router ----------
 function route() {
@@ -857,12 +1120,14 @@ function route() {
   const q = new URLSearchParams(qs || '');
   const tab = ['pending', 'paid', 'all'].includes(q.get('tab')) ? q.get('tab') : null;
   app.onclick = null;
+  document.body.classList.remove('welcome-mode');
+  if (needsWelcome()) return welcomeView();
 
   const nav = { undefined: 'home', new: 'new', edit: 'new', bills: 'bills', bill: 'bills', customers: 'customers', customer: 'customers', more: 'more' }[parts[0]];
   $$('.nav a').forEach(a => a.classList.toggle('active', a.dataset.nav === nav));
 
   switch (parts[0]) {
-    case undefined: homeView(); break;
+    case undefined: homeView(true); break;
     case 'new': billFormView(null, q.get('c')); break;
     case 'edit': billFormView(parts[1]); break;
     case 'bills': billsView(tab || 'pending'); break;
@@ -873,12 +1138,19 @@ function route() {
     default: notFound();
   }
   window.scrollTo(0, 0);
+  app.classList.remove('enter');
+  void app.offsetWidth; // restart the entrance animation
+  app.classList.add('enter');
 }
 
 // home period chips live outside per-view handlers
 document.addEventListener('click', e => {
   const chip = e.target.closest('[data-act=period]');
   if (chip) { homePeriod = chip.dataset.p; homeView(); }
+  if (e.target.closest('[data-act=install]') && installPrompt) {
+    installPrompt.prompt();
+    installPrompt.userChoice.finally(() => { installPrompt = null; homeView(); });
+  }
 });
 
 window.addEventListener('hashchange', route);

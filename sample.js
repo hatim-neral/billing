@@ -43,7 +43,12 @@ function makeSampleData(startBillNo) {
     });
 
     for (let n = rand(1, 5); n > 0; n--) {
-      const age = rand(0, 420); // spread over the last ~14 months
+      // spread over the last ~14 months, gently weighted towards recent ones so sales trend upward;
+      // the first few customers also bought something today
+      let age = 0;
+      if (!(i <= 3 && n === 1)) {
+        do age = rand(0, 420); while (Math.random() > 1 - 0.45 * age / 420);
+      }
       const items = [];
       for (let k = rand(1, 3); k > 0; k--) {
         const cat = pick(cats);

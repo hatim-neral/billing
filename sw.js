@@ -1,6 +1,7 @@
 // Network-first so updates show up immediately; cache is the offline fallback.
-const CACHE = 'billbook-v1';
-const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'sample.js', 'manifest.json', 'icon.svg'];
+const CACHE = 'billbook-v3';
+const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'sample.js', 'manifest.json', 'icon.svg',
+  'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)));

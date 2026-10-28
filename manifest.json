@@ -1,12 +1,24 @@
 {
-  "name": "BillBook",
+  "name": "BillBook · Billing for your shop",
   "short_name": "BillBook",
-  "description": "Bills, customers and revenue for your shop",
+  "description": "Make bills in seconds, track who owes you, and see your revenue, right on your phone.",
+  "id": "./",
   "start_url": "./",
+  "scope": "./",
   "display": "standalone",
+  "orientation": "portrait",
   "background_color": "#f6f5f1",
   "theme_color": "#14532d",
+  "categories": ["business", "finance", "productivity"],
   "icons": [
-    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "screenshots": [
+    { "src": "docs/screenshots/home.png", "sizes": "780x1688", "type": "image/png", "form_factor": "narrow", "label": "Today's sales and revenue" },
+    { "src": "docs/screenshots/new-bill.png", "sizes": "780x1688", "type": "image/png", "form_factor": "narrow", "label": "Make a bill in seconds" },
+    { "src": "docs/screenshots/customer.png", "sizes": "780x1688", "type": "image/png", "form_factor": "narrow", "label": "Customer history and dues" }
   ]
 }
