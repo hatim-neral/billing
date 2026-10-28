@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#14532d">
+  <title>BillBook</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar no-print">
+    <span id="shopName">BillBook</span>
+  </header>
+
+  <main id="app"></main>
+
+  <nav class="nav no-print">
+    <a href="#/" data-nav="home">
+      <svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg>Home
+    </a>
+    <a href="#/bills" data-nav="bills">
+      <svg viewBox="0 0 24 24"><path d="M6 2h12v20l-3-2-3 2-3-2-3 2zM9 7h6M9 11h6M9 15h4"/></svg>Bills
+    </a>
+    <a href="#/new" data-nav="new" class="nav-new">
+      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New
+    </a>
+    <a href="#/customers" data-nav="customers">
+      <svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-7 7-7s7 3 7 7M16 4a4 4 0 0 1 0 8M22 21c0-3-2-6-5-7"/></svg>Customers
+    </a>
+    <a href="#/more" data-nav="more">
+      <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>More
+    </a>
+  </nav>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="sample.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
